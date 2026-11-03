@@ -1,0 +1,11 @@
+Scheduler        TSDB           Features        Model           Anomaly         Alert           User
+   |               |               |               |               |               |               |
+   |--get window-->|               |               |               |               |               |
+   |               |--time series->|               |               |               |               |
+   |               |               |--features---->|               |               |               |
+   |               |               |               |--predict----->|               |               |
+   |               |               |               |--pred+act---->|               |               |
+   |               |               |               |               |--deviation--->|               |
+   |               |               |               |               |               |--notify------>|
+   |               |               |               |               |               |<--ack/act-----|
+   |               |               |               |<--feedback----|               |               |
