@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import joblib
 import numpy as np
@@ -17,15 +17,27 @@ TARGET_COLUMNS = (
     "gas_consumption_m3",
     "water_intake_m3",
 )
-LAG_COLUMNS = (*TARGET_COLUMNS, "production_t")
 KNOWN_AHEAD_COLUMNS = ("planned_production_t",)
 
 
-def build_features(frame: pd.DataFrame) -> pd.DataFrame:
+def build_features(
+    frame: pd.DataFrame,
+    *,
+    target_columns: Sequence[str] = TARGET_COLUMNS,
+    samples_per_hour: int = 1,
+) -> pd.DataFrame:
     """Create one-step-ahead features using past observations only."""
     if frame.empty:
         raise ValueError("dataset must contain at least one observation")
-    required = {"timestamp", "factory_id", *TARGET_COLUMNS}
+    targets = tuple(target_columns)
+    if not targets or any(not isinstance(target, str) or not target for target in targets):
+        raise ValueError("target_columns must contain at least one non-empty column name")
+    if len(set(targets)) != len(targets):
+        raise ValueError("target_columns must not contain duplicates")
+    if isinstance(samples_per_hour, bool) or not isinstance(samples_per_hour, int) or samples_per_hour < 1:
+        raise ValueError("samples_per_hour must be a positive integer")
+
+    required = {"timestamp", "factory_id", *targets}
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"dataset is missing columns: {', '.join(sorted(missing))}")
@@ -38,7 +50,7 @@ def build_features(frame: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("dataset contains duplicate factory_id/timestamp rows")
     result = result.sort_values(["factory_id", "timestamp"]).reset_index(drop=True)
 
-    for column in (*TARGET_COLUMNS, "production_t", *KNOWN_AHEAD_COLUMNS):
+    for column in (*targets, "production_t", *KNOWN_AHEAD_COLUMNS):
         if column in result:
             numeric = pd.to_numeric(result[column], errors="raise")
             if not np.isfinite(numeric.dropna()).all():
@@ -46,6 +58,15 @@ def build_features(frame: pd.DataFrame) -> pd.DataFrame:
             if (numeric.dropna() < 0).any():
                 raise ValueError(f"{column} contains negative values")
             result[column] = numeric
+
+    expected_interval = pd.Timedelta(hours=1 / samples_per_hour)
+    for factory_id, factory_frame in result.groupby("factory_id", sort=False):
+        intervals = factory_frame["timestamp"].diff().dropna()
+        if not intervals.eq(expected_interval).all():
+            raise ValueError(
+                f"factory {factory_id!r} timestamps must be regularly spaced "
+                f"every {expected_interval}"
+            )
 
     timestamps = result["timestamp"]
     result["hour_sin"] = np.sin(2 * np.pi * timestamps.dt.hour / 24)
@@ -55,14 +76,17 @@ def build_features(frame: pd.DataFrame) -> pd.DataFrame:
     result["year_day_sin"] = np.sin(2 * np.pi * timestamps.dt.dayofyear / 365.25)
     result["year_day_cos"] = np.cos(2 * np.pi * timestamps.dt.dayofyear / 365.25)
 
-    for column in LAG_COLUMNS:
+    lag_columns = (*targets, "production_t")
+    for column in lag_columns:
         if column not in result:
             continue
         grouped = result.groupby("factory_id", sort=False)[column]
-        for lag in (1, 24, 168):
+        daily_steps = 24 * samples_per_hour
+        weekly_steps = 168 * samples_per_hour
+        for lag in (1, daily_steps, weekly_steps):
             result[f"{column}_lag_{lag}"] = grouped.shift(lag)
         previous = grouped.shift(1)
-        for window in (24, 168):
+        for window in (daily_steps, weekly_steps):
             previous_grouped = previous.groupby(result["factory_id"], sort=False)
             result[f"{column}_rolling_{window}_mean"] = previous_grouped.transform(
                 lambda values: values.rolling(window, min_periods=1).mean()
@@ -75,10 +99,17 @@ def evaluate_dataset(
     *,
     test_fraction: float = 0.2,
     model_directory: str | Path | None = None,
+    target_columns: Sequence[str] = TARGET_COLUMNS,
+    samples_per_hour: int = 1,
 ) -> dict[str, Any]:
     if not math.isfinite(test_fraction) or not 0 < test_fraction < 0.5:
         raise ValueError("test_fraction must be between 0 and 0.5")
-    features_frame = build_features(frame)
+    targets = tuple(target_columns)
+    features_frame = build_features(
+        frame,
+        target_columns=targets,
+        samples_per_hour=samples_per_hour,
+    )
     feature_columns = [
         column
         for column in features_frame.columns
@@ -110,7 +141,7 @@ def evaluate_dataset(
             "targets": {},
         }
 
-        for target in TARGET_COLUMNS:
+        for target in targets:
             train_target = training[target].to_numpy(dtype=float)
             test_target = testing[target].to_numpy(dtype=float)
             if not np.isfinite(train_target).all() or not np.isfinite(test_target).all():
@@ -124,9 +155,19 @@ def evaluate_dataset(
             )
             model.fit(training[feature_columns], train_target)
             predictions = np.maximum(0, model.predict(testing[feature_columns]))
+            baseline_predictions = testing[f"{target}_lag_1"].to_numpy(dtype=float)
+            if not np.isfinite(baseline_predictions).all():
+                raise ValueError(f"{target} persistence baseline contains missing values")
             nonzero = test_target != 0
             absolute_errors = np.abs(test_target - predictions)
+            baseline_absolute_errors = np.abs(test_target - baseline_predictions)
             actual_sum = float(np.abs(test_target).sum())
+            baseline_mae = float(mean_absolute_error(test_target, baseline_predictions))
+            baseline_wape = (
+                float(baseline_absolute_errors.sum() / actual_sum * 100)
+                if actual_sum
+                else None
+            )
             target_metrics = {
                 "mae": float(mean_absolute_error(test_target, predictions)),
                 "rmse": float(np.sqrt(mean_squared_error(test_target, predictions))),
@@ -142,6 +183,25 @@ def evaluate_dataset(
                 "r2": (
                     float(r2_score(test_target, predictions))
                     if len(test_target) > 1 and np.ptp(test_target) > 0
+                    else None
+                ),
+                "persistence_baseline": {
+                    "mae": baseline_mae,
+                    "rmse": float(np.sqrt(mean_squared_error(test_target, baseline_predictions))),
+                    "wape_percent": baseline_wape,
+                },
+                "mae_improvement_over_baseline_percent": (
+                    (baseline_mae - float(mean_absolute_error(test_target, predictions)))
+                    / baseline_mae
+                    * 100
+                    if baseline_mae
+                    else None
+                ),
+                "wape_improvement_over_baseline_percent": (
+                    (baseline_wape - float(absolute_errors.sum() / actual_sum * 100))
+                    / baseline_wape
+                    * 100
+                    if baseline_wape
                     else None
                 ),
             }
@@ -165,6 +225,8 @@ def evaluate_dataset(
         "report_type": "chronological_one_step_ahead_backtest",
         "dataset_authenticity": "not_independently_verified",
         "test_fraction": test_fraction,
+        "samples_per_hour": samples_per_hour,
+        "sampling_interval_hours": 1 / samples_per_hour,
         "train_row_count": total_train_rows,
         "test_row_count": total_test_rows,
         "feature_columns": feature_columns,

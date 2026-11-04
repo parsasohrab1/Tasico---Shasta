@@ -1,0 +1,49 @@
+{
+  "report_type": "chronological_one_step_ahead_backtest",
+  "dataset_authenticity": "not_independently_verified",
+  "test_fraction": 0.2,
+  "samples_per_hour": 4,
+  "sampling_interval_hours": 0.25,
+  "train_row_count": 28032,
+  "test_row_count": 7008,
+  "feature_columns": [
+    "hour_sin",
+    "hour_cos",
+    "weekday_sin",
+    "weekday_cos",
+    "year_day_sin",
+    "year_day_cos",
+    "Usage_kWh_lag_1",
+    "Usage_kWh_lag_96",
+    "Usage_kWh_lag_672",
+    "Usage_kWh_rolling_96_mean",
+    "Usage_kWh_rolling_672_mean"
+  ],
+  "factories": {
+    "UCI-steel-industry": {
+      "train_rows": 28032,
+      "test_rows": 7008,
+      "train_end": "2018-10-19T23:45:00+00:00",
+      "test_start": "2018-10-20T00:00:00+00:00",
+      "targets": {
+        "Usage_kWh": {
+          "mae": 4.839792151595291,
+          "rmse": 9.520212781744195,
+          "mape_percent": 23.031431844135298,
+          "mape_sample_count": 7007,
+          "wape_percent": 19.18126348240285,
+          "r2": 0.9079103518400103,
+          "persistence_baseline": {
+            "mae": 5.493153538812786,
+            "rmse": 12.388583046388325,
+            "wape_percent": 21.770692227460863
+          },
+          "mae_improvement_over_baseline_percent": 11.894103862217973,
+          "wape_improvement_over_baseline_percent": 11.894103862217978
+        }
+      }
+    }
+  },
+  "dataset_sha256": "9b1cee6f9cb9cd9df2b95814ca90a9a2ff15b7f5f1fba0fae3c643e82072eacc",
+  "dataset_path": "steel_industry_energy_consumption.csv"
+}

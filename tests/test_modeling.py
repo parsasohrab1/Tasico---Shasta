@@ -64,3 +64,35 @@ def test_mape_excludes_zero_targets_and_uses_wape() -> None:
     assert metrics["mape_sample_count"] == 3
     assert metrics["mape_percent"] is not None
     assert metrics["wape_percent"] is not None
+
+
+def test_single_target_evaluation_does_not_require_unavailable_factory_metrics() -> None:
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2025-01-01", periods=40, freq="15min"),
+            "factory_id": "public-steel",
+            "Usage_kWh": np.arange(40, dtype=float) + 1,
+        }
+    )
+
+    report = evaluate_dataset(
+        frame,
+        target_columns=["Usage_kWh"],
+        samples_per_hour=4,
+    )
+
+    factory = report["factories"]["public-steel"]
+    metrics = factory["targets"]["Usage_kWh"]
+    assert set(factory["targets"]) == {"Usage_kWh"}
+    assert report["samples_per_hour"] == 4
+    assert report["sampling_interval_hours"] == 0.25
+    assert "Usage_kWh_lag_96" in report["feature_columns"]
+    assert metrics["persistence_baseline"]["mae"] > 0
+    assert metrics["mae_improvement_over_baseline_percent"] is not None
+
+
+def test_feature_builder_rejects_irregular_sampling_frequency() -> None:
+    frame = example_frame(10)
+    frame.loc[5:, "timestamp"] += pd.Timedelta(minutes=15)
+    with pytest.raises(ValueError, match="regularly spaced"):
+        build_features(frame)
