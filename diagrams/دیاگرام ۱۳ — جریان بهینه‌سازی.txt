@@ -1,0 +1,15 @@
+Operator         API Gateway      Optimization     EquipmentModel   PriceService     Simulator
+   |                 |                 |                 |                 |               |
+   |--request------->|                 |                 |                 |               |
+   |                 |--get model----->|                 |                 |               |
+   |                 |                 |<--equipment-----|                 |               |
+   |                 |--get prices---->|                 |                 |               |
+   |                 |                 |<--prices--------|-----------------|               |
+   |                 |--run opt------->|                 |                 |               |
+   |                 |                 |--solve MILP---->|                 |               |
+   |                 |                 |--evaluate------>|                 |--sim--------->|
+   |                 |                 |<--sim result----|-----------------|---------------|
+   |                 |<--plan+cost-----|                 |                 |               |
+   |<--show plan-----|                 |                 |                 |               |
+   |--approve--------|                 |                 |                 |               |
+   |                 |--record-------->|                 |                 |               |

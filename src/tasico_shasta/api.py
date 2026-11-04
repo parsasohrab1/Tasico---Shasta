@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tasico_shasta.alerts import SignalMeasurement, detect_deviations
 from tasico_shasta.config import Role, Settings, User, password_context
 from tasico_shasta.optimization import solve_dispatch
 
@@ -54,6 +55,44 @@ class DispatchRequest(BaseModel):
             raise ValueError("boiler ids must be unique")
         if len({turbine.id for turbine in self.turbines}) != len(self.turbines):
             raise ValueError("turbine ids must be unique")
+        return self
+
+
+class DeviationSignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metric: Literal[
+        "elec_consumption_kwh",
+        "steam_demand_t",
+        "gas_consumption_m3",
+        "water_intake_m3",
+    ]
+    actual: float = Field(ge=0, allow_inf_nan=False)
+    expected: float = Field(ge=0, allow_inf_nan=False)
+    warning_threshold: float = Field(gt=0, allow_inf_nan=False)
+    critical_threshold: float = Field(gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_thresholds(self) -> DeviationSignal:
+        if self.critical_threshold <= self.warning_threshold:
+            raise ValueError("critical_threshold must exceed warning_threshold")
+        return self
+
+
+class DeviationAlertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    factory_id: str = Field(min_length=1, max_length=100)
+    observed_at: datetime
+    signals: list[DeviationSignal] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_signals(self) -> DeviationAlertRequest:
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("observed_at must include a timezone")
+        metrics = [signal.metric for signal in self.signals]
+        if len(set(metrics)) != len(metrics):
+            raise ValueError("signal metrics must be unique")
         return self
 
 
@@ -142,6 +181,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "username": user.username,
             "role": user.role.value,
             "factories": sorted(user.factories),
+        }
+
+    @app.post("/alerts/deviation")
+    async def deviation_alerts(
+        body: DeviationAlertRequest,
+        user: Annotated[User, Depends(current_user)],
+    ) -> dict[str, Any]:
+        if user.role != Role.ADMIN and body.factory_id not in user.factories:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No access to the requested factory",
+            )
+        alerts = detect_deviations(
+            factory_id=body.factory_id,
+            observed_at=body.observed_at,
+            signals=[
+                SignalMeasurement(**signal.model_dump())
+                for signal in body.signals
+            ],
+        )
+        return {
+            "factory_id": body.factory_id,
+            "evaluated_at": body.observed_at.isoformat(),
+            "evaluated_signal_count": len(body.signals),
+            "alert_count": len(alerts),
+            "alerts": alerts,
+            "persisted": False,
         }
 
     @app.post("/optimization/dispatch")

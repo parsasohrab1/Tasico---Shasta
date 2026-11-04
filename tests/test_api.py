@@ -118,6 +118,82 @@ def test_dispatch_is_recommendation_only_and_returns_feasible_result() -> None:
     assert response.json()["total_cost"] == 22
 
 
+def test_deviation_alert_endpoint_returns_thresholded_non_persisted_alerts() -> None:
+    with TestClient(create_app(make_settings())) as client:
+        token = get_token(client, "viewer")
+        response = client.post(
+            "/alerts/deviation",
+            json={
+                "factory_id": "F1",
+                "observed_at": "2026-01-01T00:00:00Z",
+                "signals": [
+                    {
+                        "metric": "gas_consumption_m3",
+                        "actual": 125,
+                        "expected": 100,
+                        "warning_threshold": 10,
+                        "critical_threshold": 25,
+                    }
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["alert_count"] == 1
+    assert result["persisted"] is False
+    assert result["alerts"][0]["severity"] == "critical"
+
+
+def test_deviation_alert_endpoint_enforces_factory_scope() -> None:
+    with TestClient(create_app(make_settings())) as client:
+        token = get_token(client, "operator")
+        response = client.post(
+            "/alerts/deviation",
+            json={
+                "factory_id": "F2",
+                "observed_at": "2026-01-01T00:00:00Z",
+                "signals": [
+                    {
+                        "metric": "gas_consumption_m3",
+                        "actual": 125,
+                        "expected": 100,
+                        "warning_threshold": 10,
+                        "critical_threshold": 25,
+                    }
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 403
+
+
+def test_deviation_alert_endpoint_rejects_timezone_naive_timestamp() -> None:
+    with TestClient(create_app(make_settings())) as client:
+        token = get_token(client, "operator")
+        response = client.post(
+            "/alerts/deviation",
+            json={
+                "factory_id": "F1",
+                "observed_at": "2026-01-01T00:00:00",
+                "signals": [
+                    {
+                        "metric": "gas_consumption_m3",
+                        "actual": 125,
+                        "expected": 100,
+                        "warning_threshold": 10,
+                        "critical_threshold": 25,
+                    }
+                ],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 422
+
+
 def test_authentication_fails_closed_for_wrong_password() -> None:
     with TestClient(create_app(make_settings())) as client:
         response = client.post(
